@@ -38,6 +38,19 @@ st.markdown("""
     margin-bottom: 2.2rem;
 }
 
+@media (max-width: 768px) {
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 2rem !important;
+        padding-left: 0.8rem !important;
+        padding-right: 0.8rem !important;
+    }
+    .studio-title {
+        font-size: 1.65rem !important;
+        margin-bottom: 1.2rem !important;
+    }
+}
+
 /* Sidebar styling */
 [data-testid="stSidebar"] {
     border-right: 1px solid #E2E8F0;
@@ -170,8 +183,6 @@ def _load_asset(filename, is_gray=False):
 # ---------------------------------------------------------------- sample photos definition
 @st.cache_data
 def make_samples():
-    rng = np.random.default_rng(0)
-
     def u8(x):
         return np.clip(x, 0, 255).astype(np.uint8)
 
@@ -181,79 +192,51 @@ def make_samples():
     # Try loading from local assets folder first
     coffee_raw = _load_asset("coffee.png")
     moon_raw = _load_asset("moon.png", is_gray=True)
-    astro_raw = _load_asset("astronaut.png")
-    chelsea_raw = _load_asset("chelsea.png")
 
     # Fallback to skimage.data if local assets are missing
-    if coffee_raw is None or moon_raw is None or astro_raw is None or chelsea_raw is None:
+    if coffee_raw is None or moon_raw is None:
         try:
             from skimage import data
             coffee_raw = data.coffee() if coffee_raw is None else coffee_raw
             moon_raw = data.moon() if moon_raw is None else moon_raw
-            astro_raw = data.astronaut() if astro_raw is None else astro_raw
-            chelsea_raw = data.chelsea() if chelsea_raw is None else chelsea_raw
         except Exception:
-            # Synthetic fallbacks in case both local and external fail
             h, w = 400, 400
             coffee_raw = np.full((h, w, 3), 40, dtype=np.uint8) if coffee_raw is None else coffee_raw
             moon_raw = np.full((h, w), 100, dtype=np.uint8) if moon_raw is None else moon_raw
-            astro_raw = np.full((h, w, 3), 120, dtype=np.uint8) if astro_raw is None else astro_raw
-            chelsea_raw = np.full((h, w, 3), 140, dtype=np.uint8) if chelsea_raw is None else chelsea_raw
 
+    # 1. Low light coffee sample
     dark = u8(255 * (coffee_raw / 255.0) ** 2.6 * 0.85)
+    dark_enh = E.gamma_correction(dark, 0.65)
+    _, dark_buf = cv2.imencode(".png", cv2.cvtColor(dark_enh, cv2.COLOR_RGB2BGR))
 
+    # 2. Flat hazy moon sample
     moon_f = moon_raw.astype(np.float32)
     flat = rgb(u8(110 + (moon_f - moon_f.mean()) * 0.35))
-
-    astro_f = astro_raw.astype(np.float32)
-    noisy = astro_f + rng.normal(0, 28, astro_raw.shape)
-    specks = rng.random(astro_raw.shape[:2])
-    noisy[specks < 0.02] = 0
-    noisy[specks > 0.98] = 255
-    noisy = u8(noisy)
-
-    soft = cv2.GaussianBlur(chelsea_raw, (0, 0), 2.5)
+    flat_enh = E.histogram_equalization(flat)
+    _, flat_buf = cv2.imencode(".png", cv2.cvtColor(flat_enh, cv2.COLOR_RGB2BGR))
 
     return [
         {
             "id": "dark",
             "title": "Low-Light Restoration",
-            "subject": "Underexposed capture (Coffee)",
             "description": "",
-            "algorithm": "Gamma Correction: s = c * r^gamma (gamma = 0.65)",
             "original": dark,
-            "enhanced": E.gamma_correction(dark, 0.65),
+            "enhanced": dark_enh,
             "effect_name": "Lighten dark areas",
+            "psnr": f"{E.psnr(dark, dark_enh):.2f} dB",
+            "ssim": f"{E.ssim(dark, dark_enh):.3f}",
+            "png_bytes": dark_buf.tobytes(),
         },
         {
             "id": "flat",
             "title": "Dynamic Range & Contrast Stretch",
-            "subject": "Low dynamic range capture (Moon)",
-            "description": "Narrow tonal distribution causes a flat, hazy appearance. Luminance histogram equalization spreads pixel values across the entire 0-255 spectrum.",
-            "algorithm": "Histogram Equalization (Luminance channel)",
+            "description": "",
             "original": flat,
-            "enhanced": E.histogram_equalization(flat),
+            "enhanced": flat_enh,
             "effect_name": "Auto contrast",
-        },
-        {
-            "id": "grainy",
-            "title": "Speckle & Sensor Noise Suppression",
-            "subject": "Salt-and-pepper degraded photo (Astronaut)",
-            "description": "High-frequency impulse noise corrupts the image. Non-linear rank median filtering eliminates isolated speckles while preserving structural boundaries.",
-            "algorithm": "Median Rank Filter (3x3 spatial window)",
-            "original": noisy,
-            "enhanced": E.median_filter(noisy, 3),
-            "effect_name": "Remove specks and dots",
-        },
-        {
-            "id": "blurry",
-            "title": "High-Boost Detail & Edge Sharpening",
-            "subject": "Out-of-focus capture (Chelsea)",
-            "description": "Lens defocus softens edges and fine textures. High-boost unsharp masking extracts high-frequency residuals to restore crisp contours.",
-            "algorithm": "Unsharp Masking: sharp = orig + 1.2 * (orig - blur)",
-            "original": soft,
-            "enhanced": E.unsharp_mask(soft, sigma=1.5, amount=1.2),
-            "effect_name": "Fine sharpen",
+            "psnr": f"{E.psnr(flat, flat_enh):.2f} dB",
+            "ssim": f"{E.ssim(flat, flat_enh):.3f}",
+            "png_bytes": flat_buf.tobytes(),
         },
     ]
 
@@ -309,55 +292,37 @@ st.markdown('<div class="studio-title">Image Enhancement Studio</div>', unsafe_a
 
 # Determine items to display
 if uploaded is not None:
-    # Custom image mode: generate enhancement variations for uploaded image
-    custom_img = np.array(Image.open(uploaded).convert("RGB"))
+    # Downscale large mobile uploads to a max side of 1080px for fast responsive processing
+    pil_img = Image.open(uploaded).convert("RGB")
+    if max(pil_img.size) > 1080:
+        pil_img.thumbnail((1080, 1080))
+    custom_img = np.array(pil_img)
     if bw_mode:
         custom_img = cv2.cvtColor(custom_img, cv2.COLOR_RGB2GRAY)
+
+    c_light = E.gamma_correction(custom_img, 0.65)
+    c_contrast = E.histogram_equalization(custom_img)
 
     slides = [
         {
             "id": "custom_light",
             "title": "Low-Light Shadow Recovery",
-            "subject": f"Custom photo: {uploaded.name}",
-            "description": "Expands underexposed shadow values while preserving bright regions.",
-            "algorithm": "Gamma Correction (gamma = 0.65)",
+            "description": "",
             "original": custom_img,
-            "enhanced": E.gamma_correction(custom_img, 0.65),
+            "enhanced": c_light,
             "effect_name": "Lighten dark areas",
         },
         {
             "id": "custom_contrast",
             "title": "Contrast & Tone Redistribution",
-            "subject": f"Custom photo: {uploaded.name}",
-            "description": "Maximizes dynamic contrast by redistributing luminance levels across the full range.",
-            "algorithm": "Histogram Equalization",
+            "description": "",
             "original": custom_img,
-            "enhanced": E.histogram_equalization(custom_img),
+            "enhanced": c_contrast,
             "effect_name": "Auto contrast",
-        },
-        {
-            "id": "custom_denoise",
-            "title": "Noise & Artifact Suppression",
-            "subject": f"Custom photo: {uploaded.name}",
-            "description": "Cleans up sensor noise and speckles while preserving structural boundaries.",
-            "algorithm": "Median Rank Filter (3x3 window)",
-            "original": custom_img,
-            "enhanced": E.median_filter(custom_img, 3),
-            "effect_name": "Remove specks and dots",
-        },
-        {
-            "id": "custom_sharpen",
-            "title": "Edge & Contour Sharpening",
-            "subject": f"Custom photo: {uploaded.name}",
-            "description": "Extracts high-frequency spatial components to restore fine edge sharpness.",
-            "algorithm": "Unsharp Masking (sigma = 1.5, strength = 1.2)",
-            "original": custom_img,
-            "enhanced": E.unsharp_mask(custom_img, sigma=1.5, amount=1.2),
-            "effect_name": "Fine sharpen",
         },
     ]
 else:
-    # Built-in samples slideshow
+    # Built-in samples slideshow (2 primary examples)
     raw_slides = make_samples()
     slides = []
     for item in raw_slides:
@@ -380,10 +345,15 @@ for idx, slide in enumerate(slides, start=1):
     enh = slide["enhanced"]
     h, w = orig.shape[:2]
 
-    # Metrics
+    # Fast metrics: reuse cached if available
     has_same_shape = (orig.shape == enh.shape)
-    psnr_str = f"{E.psnr(orig, enh):.2f} dB" if has_same_shape else "N/A"
-    ssim_str = f"{E.ssim(orig, enh):.3f}" if has_same_shape else "N/A"
+    if show_metrics and has_same_shape:
+        if "psnr" in slide and "ssim" in slide and not bw_mode:
+            metric_tag = f"PSNR: {slide['psnr']} • SSIM: {slide['ssim']}"
+        else:
+            metric_tag = f"PSNR: {E.psnr(orig, enh):.2f} dB • SSIM: {E.ssim(orig, enh):.3f}"
+    else:
+        metric_tag = slide.get("effect_name", "Enhanced")
 
     # Slide card container
     desc_html = f'<div class="slide-description">{slide["description"]}</div>' if slide.get("description") else ""
@@ -412,7 +382,6 @@ for idx, slide in enumerate(slides, start=1):
             show_image(col_left, orig)
 
         with col_right:
-            metric_tag = f"PSNR: {psnr_str} • SSIM: {ssim_str}" if (show_metrics and has_same_shape) else slide['effect_name']
             st.markdown(
                 f"""<div class="frame-header">
 <span class="frame-badge badge-enh">Enhanced</span>
@@ -435,14 +404,19 @@ for idx, slide in enumerate(slides, start=1):
                 st.pyplot(fig_enh)
                 plt.close(fig_enh)
 
-        # Download button for this specific enhanced slide
-        save_img = cv2.cvtColor(enh, cv2.COLOR_RGB2BGR) if enh.ndim == 3 else enh
-        _, enc_buf = cv2.imencode(".png", save_img)
+        # Download button with fast buffer caching
+        if "png_bytes" in slide and not bw_mode:
+            download_data = slide["png_bytes"]
+        else:
+            save_img = cv2.cvtColor(enh, cv2.COLOR_RGB2BGR) if enh.ndim == 3 else enh
+            _, enc_buf = cv2.imencode(".png", save_img)
+            download_data = enc_buf.tobytes()
+
         btn_cols = st.columns([4, 1])
         with btn_cols[1]:
             st.download_button(
                 label="Download Result",
-                data=enc_buf.tobytes(),
+                data=download_data,
                 file_name=f"enhanced_{slide['id']}.png",
                 mime="image/png",
                 key=f"dl_btn_{slide['id']}_{idx}",
