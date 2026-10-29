@@ -29,6 +29,7 @@ An interactive Digital Image Processing (DIP) web application built with **Strea
 DIP PROJECT/
 ├── .streamlit/
 │   └── config.toml       # Custom Streamlit UI theme & typography configuration
+├── assets/               # Bundled sample images for offline & cloud deployment
 ├── app.py                # Main Streamlit web application & interface
 ├── enhance.py            # Core image processing algorithms & metrics library
 ├── requirements.txt      # Python dependencies

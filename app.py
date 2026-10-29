@@ -2,8 +2,11 @@
 Run with:  streamlit run app.py
 """
 import io
+import os
 
 import cv2
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
@@ -154,10 +157,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def _load_asset(filename, is_gray=False):
+    asset_path = os.path.join(os.path.dirname(__file__), "assets", filename)
+    if os.path.exists(asset_path):
+        flag = cv2.IMREAD_GRAYSCALE if is_gray else cv2.IMREAD_COLOR
+        im = cv2.imread(asset_path, flag)
+        if im is not None:
+            return im if is_gray else cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+    return None
+
+
 # ---------------------------------------------------------------- sample photos definition
 @st.cache_data
 def make_samples():
-    from skimage import data
     rng = np.random.default_rng(0)
 
     def u8(x):
@@ -166,19 +178,41 @@ def make_samples():
     def rgb(a):
         return np.dstack([a, a, a]) if a.ndim == 2 else a
 
-    dark = u8(255 * (data.coffee() / 255.0) ** 2.6 * 0.85)
+    # Try loading from local assets folder first
+    coffee_raw = _load_asset("coffee.png")
+    moon_raw = _load_asset("moon.png", is_gray=True)
+    astro_raw = _load_asset("astronaut.png")
+    chelsea_raw = _load_asset("chelsea.png")
 
-    moon = data.moon().astype(np.float32)
-    flat = rgb(u8(110 + (moon - moon.mean()) * 0.35))
+    # Fallback to skimage.data if local assets are missing
+    if coffee_raw is None or moon_raw is None or astro_raw is None or chelsea_raw is None:
+        try:
+            from skimage import data
+            coffee_raw = data.coffee() if coffee_raw is None else coffee_raw
+            moon_raw = data.moon() if moon_raw is None else moon_raw
+            astro_raw = data.astronaut() if astro_raw is None else astro_raw
+            chelsea_raw = data.chelsea() if chelsea_raw is None else chelsea_raw
+        except Exception:
+            # Synthetic fallbacks in case both local and external fail
+            h, w = 400, 400
+            coffee_raw = np.full((h, w, 3), 40, dtype=np.uint8) if coffee_raw is None else coffee_raw
+            moon_raw = np.full((h, w), 100, dtype=np.uint8) if moon_raw is None else moon_raw
+            astro_raw = np.full((h, w, 3), 120, dtype=np.uint8) if astro_raw is None else astro_raw
+            chelsea_raw = np.full((h, w, 3), 140, dtype=np.uint8) if chelsea_raw is None else chelsea_raw
 
-    astro = data.astronaut().astype(np.float32)
-    noisy = astro + rng.normal(0, 28, astro.shape)
-    specks = rng.random(astro.shape[:2])
+    dark = u8(255 * (coffee_raw / 255.0) ** 2.6 * 0.85)
+
+    moon_f = moon_raw.astype(np.float32)
+    flat = rgb(u8(110 + (moon_f - moon_f.mean()) * 0.35))
+
+    astro_f = astro_raw.astype(np.float32)
+    noisy = astro_f + rng.normal(0, 28, astro_raw.shape)
+    specks = rng.random(astro_raw.shape[:2])
     noisy[specks < 0.02] = 0
     noisy[specks > 0.98] = 255
     noisy = u8(noisy)
 
-    soft = cv2.GaussianBlur(data.chelsea(), (0, 0), 2.5)
+    soft = cv2.GaussianBlur(chelsea_raw, (0, 0), 2.5)
 
     return [
         {
